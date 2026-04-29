@@ -20,6 +20,37 @@ const BLANK = { id: "", status: "active", address: "", suburb: "", city: "Auckla
 const gold = "#c8a96e", navy = "#1a1a2e";
 const genId = (a) => a.toLowerCase().replace(/[^a-z0-9]/g,"-").replace(/-+/g,"-").slice(0,20)+"-"+Date.now().toString(36);
 
+// ============================================================
+// STORAGE ADAPTER
+// Works in Claude artifacts (window.storage) AND on GitHub Pages (localStorage)
+// ============================================================
+const storage = {
+  async get(key) {
+    if (typeof window.storage !== "undefined" && typeof window.storage.get === "function") {
+      try {
+        const result = await window.storage.get(key, true);
+        return result ? result.value : null;
+      } catch { /* fall through */ }
+    }
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  async set(key, value) {
+    if (typeof window.storage !== "undefined" && typeof window.storage.set === "function") {
+      try {
+        await window.storage.set(key, value, true);
+        return;
+      } catch { /* fall through */ }
+    }
+    try {
+      localStorage.setItem(key, value);
+    } catch { /* silent fail */ }
+  }
+};
+
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&family=Playfair+Display:wght@400;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -132,6 +163,7 @@ tr:hover td{background:#fafaf8;}
 .toast{position:fixed;bottom:26px;right:26px;background:${navy};color:#fff;padding:13px 20px;font-size:12px;font-weight:600;z-index:400;display:flex;align-items:center;gap:9px;animation:tin 0.25s ease;max-width:330px;line-height:1.4;}
 .toast.ok{border-left:4px solid #22c55e;} .toast.err{border-left:4px solid #dc2626;}
 @keyframes tin{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+.info-banner{background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:12px 18px;font-size:12px;margin-bottom:20px;display:flex;align-items:center;gap:10px;line-height:1.5;}
 `;
 
 export default function App() {
@@ -148,17 +180,21 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const saved = await window.storage.get(STORAGE_KEY, true);
-        setProps(saved?.value ? JSON.parse(saved.value) : INITIAL_PROPERTIES);
-        if (!saved?.value) await window.storage.set(STORAGE_KEY, JSON.stringify(INITIAL_PROPERTIES), true);
-      } catch { setProps(INITIAL_PROPERTIES); }
+        const saved = await storage.get(STORAGE_KEY);
+        setProps(saved ? JSON.parse(saved) : INITIAL_PROPERTIES);
+        if (!saved) await storage.set(STORAGE_KEY, JSON.stringify(INITIAL_PROPERTIES));
+      } catch {
+        setProps(INITIAL_PROPERTIES);
+      }
     })();
   }, []);
 
   const persist = async (next) => {
     setSync("saving");
     setProps(next);
-    try { await window.storage.set(STORAGE_KEY, JSON.stringify(next), true); } catch {}
+    try {
+      await storage.set(STORAGE_KEY, JSON.stringify(next));
+    } catch {}
     setSync("live");
   };
 
@@ -187,21 +223,21 @@ export default function App() {
       ? props.map(p => p.id === modal.id ? clean : p)
       : [{ ...clean, id: genId(modal.address) }, ...props];
     await persist(next);
-    toast_(isEdit ? "✅ Listing updated — live on your website now!" : "✅ New listing is live on your website!");
+    toast_(isEdit ? "✅ Listing updated!" : "✅ New listing added!");
     closeModal();
   };
 
   const handleDelete = async (id) => {
     await persist(props.filter(p => p.id !== id));
     setDelTarget(null);
-    toast_("Listing removed from your website");
+    toast_("Listing removed");
   };
 
   const markSold = async (p) => {
     const now = new Date().toLocaleDateString("en-NZ", { month: "long", year: "numeric" });
     const next = props.map(x => x.id === p.id ? { ...x, status: "sold", price: "Sold", priceNote: `Sold — ${now}`, soldDate: now } : x);
     await persist(next);
-    toast_(`✅ ${p.address} marked as sold — website updated!`);
+    toast_(`✅ ${p.address} marked as sold!`);
   };
 
   if (!props) return (
@@ -209,7 +245,7 @@ export default function App() {
       <style>{css}</style>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", flexDirection: "column", gap: 14, color: navy }}>
         <div style={{ fontFamily: "'Playfair Display',serif", fontSize: 22 }}>Loading listings…</div>
-        <div style={{ fontSize: 12, color: "#aaa" }}>Connecting to live website</div>
+        <div style={{ fontSize: 12, color: "#aaa" }}>Fetching saved data</div>
       </div>
     </>
   );
@@ -223,6 +259,9 @@ export default function App() {
     return true;
   });
 
+  // Detect if running on GitHub Pages (not in Claude artifact environment)
+  const isGitHubPages = typeof window.storage === "undefined" || typeof window.storage.get !== "function";
+
   return (
     <>
       <style>{css}</style>
@@ -235,7 +274,7 @@ export default function App() {
           <div className="sync-row">
             <div className={`sync-dot${sync === "saving" ? " saving" : ""}`} />
             <div className={`sync-label${sync === "live" ? " live" : ""}`}>
-              {sync === "saving" ? "Saving to website…" : "Live & synced"}
+              {sync === "saving" ? "Saving…" : "Saved locally"}
             </div>
           </div>
         </div>
@@ -257,12 +296,18 @@ export default function App() {
 
       {/* Main */}
       <div className="main">
+        {isGitHubPages && (
+          <div className="info-banner">
+            ℹ️ <strong>Local mode:</strong> Changes are saved in this browser only. To sync listings with the public website, update the <code>PROPERTIES</code> array in your website's HTML file.
+          </div>
+        )}
+
         <div className="live-bar">
           <div className="live-bar-dot" />
           <div className="live-bar-text">
-            <strong>Connected to your live website.</strong> Any listing you save, edit, or remove will instantly appear on your website — no codes, no uploads, nothing extra.
+            <strong>Property Admin Panel.</strong> Add, edit, or remove listings. Changes are saved to your browser's local storage.
           </div>
-          <div className="live-pill">● Live</div>
+          <div className="live-pill">● Active</div>
         </div>
 
         <div className="page-hdr">
@@ -309,7 +354,7 @@ export default function App() {
                   </td>
                   <td><div className="prop-addr">{p.address}</div><div className="prop-sub">{p.suburb}, {p.city}</div></td>
                   <td><span className={`bdg ${p.status === "active" ? "bdg-active" : "bdg-sold"}`}>{p.status === "active" ? "For Sale" : p.soldDate ? `Sold ${p.soldDate}` : "Sold"}</span></td>
-                  <td style={{ whiteSpace: "nowrap" }}>🛏 {p.beds} &nbsp;🚿 {p.baths}{p.carparks > 0 ? ` &nbsp;🚗 ${p.carparks}` : ""}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>🛏 {p.beds} &nbsp;🚿 {p.baths}{p.carparks > 0 ? ` \u00a0🚗 ${p.carparks}` : ""}</td>
                   <td style={{ fontSize: 12, color: gold, fontWeight: 600 }}>{p.price}</td>
                   <td>
                     <div className="act-btns">
@@ -409,11 +454,11 @@ export default function App() {
             </div>
 
             <div className="modal-foot">
-              <div className="modal-foot-note"><span>🌐</span> Saving will instantly update your live website</div>
+              <div className="modal-foot-note"><span>💾</span> Saved to browser storage</div>
               <div style={{ display: "flex", gap: 9 }}>
                 <button className="btn btn-outline" onClick={closeModal}>Cancel</button>
                 <button className="btn btn-navy" onClick={handleSave}>
-                  {modal.id && props.find(p => p.id === modal.id) ? "Save & Go Live" : "Add & Go Live"}
+                  {modal.id && props.find(p => p.id === modal.id) ? "Save Changes" : "Add Listing"}
                 </button>
               </div>
             </div>
@@ -427,7 +472,7 @@ export default function App() {
           <div className="conf-box">
             <div className="conf-icon">🗑️</div>
             <div className="conf-title">Remove Listing?</div>
-            <div className="conf-msg">Are you sure you want to remove<br /><strong>{delTarget.address}</strong>?<br /><br />It will be removed from your website immediately.</div>
+            <div className="conf-msg">Are you sure you want to remove<br /><strong>{delTarget.address}</strong>?</div>
             <div className="conf-btns">
               <button className="btn btn-outline" onClick={() => setDelTarget(null)}>Cancel</button>
               <button className="btn btn-red" onClick={() => handleDelete(delTarget.id)}>Yes, Remove It</button>
